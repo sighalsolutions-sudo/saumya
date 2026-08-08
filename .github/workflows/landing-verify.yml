@@ -1,0 +1,141 @@
+name: Verify Landing Branch
+
+on:
+  push:
+    branches:
+      - feat/landing-page
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build, TypeScript, ESLint & Lighthouse
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install pnpm
+        run: corepack prepare pnpm@9.15.4 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit
+
+      - name: ESLint
+        run: pnpm run lint
+
+      - name: Production build
+        run: pnpm build
+
+      - name: Start production server
+        run: pnpm start > next-server.log 2>&1 &
+
+      - name: Wait for production server
+        run: |
+          for i in {1..30}; do
+            if curl --silent --fail http://localhost:3000 > /dev/null; then
+              echo "Production server is ready."
+              exit 0
+            fi
+            echo "Waiting for production server..."
+            sleep 2
+          done
+
+          echo "Production server did not start."
+          cat next-server.log
+          exit 1
+
+      - name: Install Lighthouse
+        run: pnpm dlx lighthouse@12.6.0 --version
+
+      - name: Run Lighthouse
+        run: |
+          mkdir -p lhci-report
+
+          pnpm dlx lighthouse@12.6.0 \
+            http://localhost:3000 \
+            --output=json \
+            --output-path=./lhci-report/report.json \
+            --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage"
+
+          pnpm dlx lighthouse@12.6.0 \
+            http://localhost:3000 \
+            --output=html \
+            --output-path=./lhci-report/report.html \
+            --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage"
+
+      - name: Check Lighthouse scores
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const report = JSON.parse(
+            fs.readFileSync('./lhci-report/report.json', 'utf8')
+          );
+
+          const scores = {
+            performance: report.categories.performance.score * 100,
+            accessibility: report.categories.accessibility.score * 100,
+            'best-practices': report.categories['best-practices'].score * 100,
+            seo: report.categories.seo.score * 100,
+          };
+
+          console.log('Lighthouse scores:');
+          console.log(`Performance: ${scores.performance}`);
+          console.log(`Accessibility: ${scores.accessibility}`);
+          console.log(`Best Practices: ${scores['best-practices']}`);
+          console.log(`SEO: ${scores.seo}`);
+
+          const minimums = {
+            performance: 90,
+            accessibility: 95,
+            'best-practices': 95,
+            seo: 95,
+          };
+
+          let failed = false;
+
+          for (const [category, minimum] of Object.entries(minimums)) {
+            if (scores[category] < minimum) {
+              console.error(
+                `${category} score ${scores[category]} is below required minimum ${minimum}`
+              );
+              failed = true;
+            }
+          }
+
+          if (failed) {
+            process.exit(1);
+          }
+
+          console.log('All Lighthouse score requirements passed.');
+          NODE
+
+      - name: Upload Lighthouse report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-report
+          path: lhci-report/
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-server-log
+          path: next-server.log

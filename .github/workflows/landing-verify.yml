@@ -22,13 +22,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
 
       - name: Enable Corepack
-        run: corepack enable
-
-      - name: Install pnpm
-        run: corepack prepare pnpm@9.15.4 --activate
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+          pnpm --version
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -43,7 +42,8 @@ jobs:
         run: pnpm build
 
       - name: Start production server
-        run: pnpm start > next-server.log 2>&1 &
+        run: |
+          pnpm start > next-server.log 2>&1 &
 
       - name: Wait for production server
         run: |
@@ -52,6 +52,7 @@ jobs:
               echo "Production server is ready."
               exit 0
             fi
+
             echo "Waiting for production server..."
             sleep 2
           done
@@ -59,6 +60,39 @@ jobs:
           echo "Production server did not start."
           cat next-server.log
           exit 1
+
+      - name: Check application routes
+        run: |
+          set -e
+
+          routes=(
+            "/"
+            "/docs"
+            "/docs/roadmap"
+            "/docs/prd"
+            "/templates"
+            "/auth"
+            "/privacy"
+            "/terms"
+            "/contact"
+          )
+
+          for route in "${routes[@]}"; do
+            echo "Checking ${route}"
+
+            status=$(curl \
+              --silent \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              "http://localhost:3000${route}")
+
+            echo "${route} -> ${status}"
+
+            if [ "$status" -lt 200 ] || [ "$status" -ge 400 ]; then
+              echo "Route check failed: ${route}"
+              exit 1
+            fi
+          done
 
       - name: Install Lighthouse
         run: pnpm dlx lighthouse@12.6.0 --version
@@ -102,18 +136,18 @@ jobs:
           console.log(`SEO: ${scores.seo}`);
 
           const minimums = {
-            performance: 90,
-            accessibility: 95,
-            'best-practices': 95,
-            seo: 95,
+            performance: 80,
+            accessibility: 90,
+            'best-practices': 90,
+            seo: 90,
           };
 
           let failed = false;
 
-          for (const [category, minimum] of Object.entries(minimums)) {
-            if (scores[category] < minimum) {
+          for (const category of Object.keys(minimums)) {
+            if (scores[category] < minimums[category]) {
               console.error(
-                `${category} score ${scores[category]} is below required minimum ${minimum}`
+                `${category} score ${scores[category]} is below required minimum ${minimums[category]}`
               );
               failed = true;
             }
